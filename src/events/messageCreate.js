@@ -1,16 +1,45 @@
 import { userMention } from "discord.js";
 import { loadDB } from "../helpers/manDataBase";
+import { startGenericLobby, activeChannels } from "../helpers/lobby";
 
 // type !testwelcome to test bot functionality
 // type !checkusers to check that users are being saved to the database
+// type !lobby [game] to open a multiplayer lobby
+// type !blackjack to start a solo game
 const event = {
-  // checks every message made in discord server general chat(general is specfied in .env file)
   name: "messageCreate",
   async execute(message, client) {
     if (message.author.bot) return; // prevent infinite loop
     const content = message.content.trim();
-    if (content === "!testwelcome") client.emit("guildMemberAdd", message.member);
-    if (content === "!checkusers") await message.reply(await getUsersReport(message.author.id));
+
+    if (content === "!testwelcome") {
+      client.emit("guildMemberAdd", message.member);
+    }
+
+    if (content === "!checkusers") {
+      await message.reply(await getUsersReport(message.author.id));
+    }
+
+    // Generic Multiplayer Lobby command: !lobby or !lobby <game>
+    if (content === "!lobby" || content.startsWith("!lobby ")) {
+      const parts = content.split(/\s+/);
+      const gameChoice = parts[1] || null;
+      await startGenericLobby(message, client, gameChoice);
+    }
+
+    // Direct Solo Blackjack command: passes author as a 1-player list to the blackjack event
+    if (content === "!blackjack") {
+      if (activeChannels.has(message.channel.id)) {
+        return message.reply("⚠️ A game or lobby is already active in this channel! Please finish or wait for it to complete.");
+      }
+      const player = {
+        id: message.author.id,
+        username: message.author.username,
+        displayName: message.member?.displayName || message.author.username,
+        user: message.author,
+      };
+      client.emit("blackjack", message.channel, [player]);
+    }
   },
 };
 

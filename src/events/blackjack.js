@@ -1,9 +1,9 @@
 import { EmbedBuilder } from 'discord.js';
-import { startLobby } from '../helpers/lobby';
+import { activeChannels } from '../helpers/lobby';
 
 /**
- * Creates and shuffles a deck of cards.
- * Uses multiple standard 52-card decks based on player count so cards never run out.
+ * Creates and shuffles a shoe of cards.
+ * Scales deck count based on player count so cards never run out.
  */
 function createDeck(numDecks = 2) {
     const suits = ['♠', '♥', '♦', '♣'];
@@ -26,7 +26,7 @@ function createDeck(numDecks = 2) {
 }
 
 /**
- * Calculates the score of a hand, handling Aces as 11 or 1.
+ * Calculates score of a hand, handling Aces dynamically (11 or 1).
  */
 function calculateScore(hand) {
     let score = 0;
@@ -84,7 +84,7 @@ function buildTableEmbed({
         ? (hideBotCard ? calculateScore([botHand[0]]) : calculateScore(botHand))
         : 0;
     const botHandStr = botHand.length > 0 ? formatHand(botHand, hideBotCard) : '*(Dealing...)*';
-    
+
     embed.addFields({
         name: `🤖 Dealer's Hand (Score: ${botScore}${hideBotCard ? ' + ?' : ''})`,
         value: botHandStr,
@@ -110,7 +110,7 @@ function buildTableEmbed({
         embed.addFields({
             name: `${player.displayName} (Score: ${player.score})`,
             value: `${statusTag}\nCards: ${handStr}`,
-            inline: true
+            inline: players.length > 1
         });
     }
 
@@ -118,104 +118,82 @@ function buildTableEmbed({
 }
 
 /**
- * Runs a multi-user Blackjack game in the specified channel.
- *
- * Stage 1: Dealt cards person by person
- * Stage 2: Prompt hit/stand person by person before moving to next stage
- * Stage 3: Dealer's turn
- * Stage 4: Results and payouts
+ * Unified Blackjack Game Flow.
+ * Handles 1 player or multiple players naturally based on the players array.
  *
  * @param {import('discord.js').TextChannel} channel - The Discord channel
- * @param {Array<{id: string, username: string, displayName: string, user: any}>} players - The opt-in players
+ * @param {Array<{id: string, username: string, displayName: string, user: any}>} players - The players
  */
 export async function runBlackjackGame(channel, players) {
-    const numDecks = Math.max(2, Math.ceil(players.length / 3));
-    const deck = createDeck(numDecks);
+    const isChannelLockedByUs = !activeChannels.has(channel.id);
+    if (isChannelLockedByUs) {
+        activeChannels.add(channel.id);
+    }
 
-    const playerStates = players.map(p => ({
-        id: p.id,
-        user: p.user,
-        displayName: p.displayName || p.username,
-        hand: [],
-        score: 0,
-        status: 'waiting', // waiting, playing, stand, bust, blackjack
-    }));
+    try {
+        const isMultiplayer = players.length > 1;
+        const numDecks = Math.max(2, Math.ceil(players.length / 3));
+        const deck = createDeck(numDecks);
 
-    const botHand = [];
+        const playerStates = players.map(p => ({
+            id: p.id,
+            user: p.user,
+            displayName: p.displayName || p.username,
+            hand: [],
+            score: 0,
+            status: 'waiting', // waiting, playing, stand, bust, blackjack
+        }));
 
-    // Send initial table message
-    const gameMessage = await channel.send({
-        embeds: [
-            buildTableEmbed({
-                players: playerStates,
-                botHand: [],
-                hideBotCard: true,
-                stageDescription: '🃏 **Table is ready! Dealing cards person by person...**',
-                color: 'Blurple'
-            })
-        ]
-    });
+        const botHand = [];
 
-    await sleep(1500);
-
-    // =========================================================================
-    // STAGE 1: DEALING CARDS PERSON BY PERSON
-    // =========================================================================
-    for (const player of playerStates) {
-        // Deal 2 cards to this player
-        player.hand.push(deck.pop());
-        player.hand.push(deck.pop());
-        player.score = calculateScore(player.hand);
-
-        if (player.score === 21) {
-            player.status = 'blackjack';
-        }
-
-        await gameMessage.edit({
+        // Initial Table Message
+        const gameMessage = await channel.send({
             embeds: [
                 buildTableEmbed({
                     players: playerStates,
-                    botHand,
+                    botHand: [],
                     hideBotCard: true,
-                    stageDescription: `🃏 Dealt 2 cards to **${player.displayName}**...`,
+                    stageDescription: isMultiplayer
+                        ? '🃏 **Table is ready! Dealing cards person by person...**'
+                        : '🃏 **Dealing cards...**',
                     color: 'Blurple'
                 })
             ]
         });
 
-        await sleep(1200);
-    }
+        if (isMultiplayer) await sleep(1200);
 
-    // Deal dealer's 2 cards (one face-up, one hidden)
-    botHand.push(deck.pop());
-    botHand.push(deck.pop());
+        // =====================================================================
+        // STAGE 1: DEALING CARDS
+        // =====================================================================
+        for (const player of playerStates) {
+            player.hand.push(deck.pop());
+            player.hand.push(deck.pop());
+            player.score = calculateScore(player.hand);
 
-    await gameMessage.edit({
-        embeds: [
-            buildTableEmbed({
-                players: playerStates,
-                botHand,
-                hideBotCard: true,
-                stageDescription: `🃏 Dealt cards to the **Dealer** (one card hidden).\nAll cards dealt! Moving to player turns...`,
-                color: 'Blurple'
-            })
-        ]
-    });
+            if (player.score === 21) {
+                player.status = 'blackjack';
+            }
 
-    await sleep(2000);
-
-    // =========================================================================
-    // STAGE 2: PLAYER TURNS (PERSON BY PERSON)
-    // =========================================================================
-    for (const player of playerStates) {
-        // Natural 21 from the initial deal
-        if (player.status === 'blackjack') {
-            await channel.send(`🌟 <@${player.id}> has **Natural Blackjack (21)!** Moving to next player...`);
-            await sleep(1500);
-            continue;
+            if (isMultiplayer) {
+                await gameMessage.edit({
+                    embeds: [
+                        buildTableEmbed({
+                            players: playerStates,
+                            botHand,
+                            hideBotCard: true,
+                            stageDescription: `🃏 Dealt 2 cards to **${player.displayName}**...`,
+                            color: 'Blurple'
+                        })
+                    ]
+                });
+                await sleep(1000);
+            }
         }
 
-        player.status = 'playing';
+        // Deal dealer's 2 cards (one face-up, one hidden)
+        botHand.push(deck.pop());
+        botHand.push(deck.pop());
 
         await gameMessage.edit({
             embeds: [
@@ -223,196 +201,222 @@ export async function runBlackjackGame(channel, players) {
                     players: playerStates,
                     botHand,
                     hideBotCard: true,
-                    activePlayerId: player.id,
-                    stageDescription: `👉 **<@${player.id}>'s Turn!**\nType **hit** to draw a card, or **stand** to keep your hand.\n*(Timeout: 45s)*`,
-                    color: 'Gold'
+                    stageDescription: isMultiplayer
+                        ? `🃏 Dealt cards to the **Dealer** (one card hidden).\nAll cards dealt! Moving to player turns...`
+                        : `🃏 Cards dealt! Your turn.`,
+                    color: 'Blurple'
                 })
             ]
         });
 
-        const turnPrompt = await channel.send(`<@${player.id}>, it's your turn! Type **hit** or **stand**.`);
+        if (isMultiplayer) await sleep(1500);
 
-        // Interactive turn loop strictly for this player
-        while (player.status === 'playing') {
-            try {
-                const filter = (m) => m.author.id === player.id && ['hit', 'stand'].includes(m.content.trim().toLowerCase());
-                const collected = await channel.awaitMessages({
-                    filter,
-                    max: 1,
-                    time: 45000,
-                    errors: ['time']
-                });
-
-                const userMsg = collected.first();
-                const choice = userMsg.content.trim().toLowerCase();
-                userMsg.delete().catch(() => {});
-
-                if (choice === 'hit') {
-                    const card = deck.pop();
-                    player.hand.push(card);
-                    player.score = calculateScore(player.hand);
-
-                    if (player.score > 21) {
-                        player.status = 'bust';
-                        await channel.send(`💥 **BUST!** <@${player.id}> drew ${card.value}${card.suit} and busted with **${player.score}**!`);
-                    } else if (player.score === 21) {
-                        player.status = 'stand';
-                        await channel.send(`🎯 **21!** <@${player.id}> drew ${card.value}${card.suit} and hit **21**! Automatically standing.`);
-                    } else {
-                        await channel.send(`<@${player.id}> drew **${card.value}${card.suit}**. Hand: ${formatHand(player.hand)} (Score: **${player.score}**). Hit or stand?`);
-                    }
-                } else if (choice === 'stand') {
-                    player.status = 'stand';
-                    await channel.send(`🛑 <@${player.id}> stands with a score of **${player.score}**.`);
-                }
-
-                await gameMessage.edit({
-                    embeds: [
-                        buildTableEmbed({
-                            players: playerStates,
-                            botHand,
-                            hideBotCard: true,
-                            activePlayerId: player.status === 'playing' ? player.id : null,
-                            stageDescription: `👉 **<@${player.id}>'s Turn** (Score: ${player.score})`,
-                            color: player.status === 'bust' ? 'Red' : 'Gold'
-                        })
-                    ]
-                });
-            } catch (err) {
-                // Time expired for this player
-                player.status = 'stand';
-                await channel.send(`⏰ <@${player.id}> ran out of time! Standing automatically with score of **${player.score}**.`);
-                await gameMessage.edit({
-                    embeds: [
-                        buildTableEmbed({
-                            players: playerStates,
-                            botHand,
-                            hideBotCard: true,
-                            activePlayerId: null,
-                            stageDescription: `⏰ <@${player.id}> timed out and stood with score of ${player.score}.`,
-                            color: 'Gold'
-                        })
-                    ]
-                });
+        // =====================================================================
+        // STAGE 2: PLAYER TURNS (PERSON BY PERSON)
+        // =====================================================================
+        for (const player of playerStates) {
+            if (player.status === 'blackjack') {
+                await channel.send(`🌟 <@${player.id}> has **Natural Blackjack (21)!**`);
+                await sleep(1200);
+                continue;
             }
-        }
 
-        turnPrompt.delete().catch(() => {});
-        await sleep(1500);
-    }
-
-    // =========================================================================
-    // STAGE 3: DEALER (BOT) TURN
-    // =========================================================================
-    let botScore = calculateScore(botHand);
-    const anyPlayerAlive = playerStates.some(p => p.status !== 'bust');
-
-    await gameMessage.edit({
-        embeds: [
-            buildTableEmbed({
-                players: playerStates,
-                botHand,
-                hideBotCard: false,
-                stageDescription: `🤖 **Dealer's Turn!** Revealing hidden card... Dealer shows **${botScore}**.`,
-                color: 'Blurple'
-            })
-        ]
-    });
-    await sleep(2000);
-
-    if (!anyPlayerAlive) {
-        await channel.send(`🤖 All players busted! Dealer wins against all hands.`);
-        await sleep(1500);
-    } else {
-        while (botScore < 17) {
-            const card = deck.pop();
-            botHand.push(card);
-            botScore = calculateScore(botHand);
+            player.status = 'playing';
 
             await gameMessage.edit({
                 embeds: [
                     buildTableEmbed({
                         players: playerStates,
                         botHand,
-                        hideBotCard: false,
-                        stageDescription: `🤖 Dealer hits and draws **${card.value}${card.suit}** (Score: ${botScore})...`,
-                        color: 'Blurple'
+                        hideBotCard: true,
+                        activePlayerId: player.id,
+                        stageDescription: `👉 **<@${player.id}>'s Turn!**\nType **hit** to draw a card, or **stand** to keep your hand.\n*(Timeout: 45s)*`,
+                        color: 'Gold'
                     })
                 ]
             });
-            await sleep(2000);
+
+            const turnPrompt = await channel.send(`<@${player.id}>, it's your turn! Type **hit** or **stand**.`);
+
+            while (player.status === 'playing') {
+                try {
+                    const filter = (m) => m.author.id === player.id && ['hit', 'stand'].includes(m.content.trim().toLowerCase());
+                    const collected = await channel.awaitMessages({
+                        filter,
+                        max: 1,
+                        time: 45000,
+                        errors: ['time']
+                    });
+
+                    const userMsg = collected.first();
+                    const choice = userMsg.content.trim().toLowerCase();
+                    userMsg.delete().catch(() => {});
+
+                    if (choice === 'hit') {
+                        const card = deck.pop();
+                        player.hand.push(card);
+                        player.score = calculateScore(player.hand);
+
+                        if (player.score > 21) {
+                            player.status = 'bust';
+                            await channel.send(`💥 **BUST!** <@${player.id}> drew ${card.value}${card.suit} and busted with **${player.score}**!`);
+                        } else if (player.score === 21) {
+                            player.status = 'stand';
+                            await channel.send(`🎯 **21!** <@${player.id}> drew ${card.value}${card.suit} and hit **21**! Automatically standing.`);
+                        } else {
+                            await channel.send(`<@${player.id}> drew **${card.value}${card.suit}**. Hand: ${formatHand(player.hand)} (Score: **${player.score}**). Hit or stand?`);
+                        }
+                    } else if (choice === 'stand') {
+                        player.status = 'stand';
+                        await channel.send(`🛑 <@${player.id}> stands with a score of **${player.score}**.`);
+                    }
+
+                    await gameMessage.edit({
+                        embeds: [
+                            buildTableEmbed({
+                                players: playerStates,
+                                botHand,
+                                hideBotCard: true,
+                                activePlayerId: player.status === 'playing' ? player.id : null,
+                                stageDescription: `👉 **<@${player.id}>'s Turn** (Score: ${player.score})`,
+                                color: player.status === 'bust' ? 'Red' : 'Gold'
+                            })
+                        ]
+                    });
+                } catch (err) {
+                    player.status = 'stand';
+                    await channel.send(`⏰ <@${player.id}> ran out of time! Standing automatically with score of **${player.score}**.`);
+                    await gameMessage.edit({
+                        embeds: [
+                            buildTableEmbed({
+                                players: playerStates,
+                                botHand,
+                                hideBotCard: true,
+                                activePlayerId: null,
+                                stageDescription: `⏰ <@${player.id}> timed out and stood with ${player.score}.`,
+                                color: 'Gold'
+                            })
+                        ]
+                    });
+                }
+            }
+
+            turnPrompt.delete().catch(() => {});
+            if (isMultiplayer) await sleep(1200);
         }
 
-        if (botScore > 21) {
-            await channel.send(`💥 **DEALER BUSTED** with a score of **${botScore}**!`);
-        } else {
-            await channel.send(`🤖 Dealer stands with a score of **${botScore}**.`);
-        }
+        // =====================================================================
+        // STAGE 3: DEALER TURN
+        // =====================================================================
+        let botScore = calculateScore(botHand);
+        const anyPlayerAlive = playerStates.some(p => p.status !== 'bust');
+
+        await gameMessage.edit({
+            embeds: [
+                buildTableEmbed({
+                    players: playerStates,
+                    botHand,
+                    hideBotCard: false,
+                    stageDescription: `🤖 **Dealer's Turn!** Revealing hidden card... Dealer shows **${botScore}**.`,
+                    color: 'Blurple'
+                })
+            ]
+        });
         await sleep(1500);
-    }
 
-    // =========================================================================
-    // STAGE 4: RESULTS & OUTCOMES
-    // =========================================================================
-    const resultsEmbed = new EmbedBuilder()
-        .setTitle('♠️♥️ Blackjack - Final Results ♣️♦️')
-        .setDescription(
-            `**Dealer Final Hand:** ${formatHand(botHand)} (Score: **${botScore}**${botScore > 21 ? ' - BUST' : ''})\n\n` +
-            `Here are the results for each player:`
-        );
+        if (!anyPlayerAlive) {
+            await channel.send(`🤖 All players busted! Dealer wins against all hands.`);
+            await sleep(1000);
+        } else {
+            while (botScore < 17) {
+                const card = deck.pop();
+                botHand.push(card);
+                botScore = calculateScore(botHand);
 
-    let anyWinner = false;
-    let allLoss = true;
+                await gameMessage.edit({
+                    embeds: [
+                        buildTableEmbed({
+                            players: playerStates,
+                            botHand,
+                            hideBotCard: false,
+                            stageDescription: `🤖 Dealer hits and draws **${card.value}${card.suit}** (Score: ${botScore})...`,
+                            color: 'Blurple'
+                        })
+                    ]
+                });
+                await sleep(1500);
+            }
 
-    for (const player of playerStates) {
-        let outcome = '';
-
-        if (player.status === 'bust') {
-            outcome = '💥 **Bust (Lost)**';
-        } else if (player.status === 'blackjack') {
-            if (botScore === 21 && botHand.length === 2) {
-                outcome = '🤝 **Push** (Both dealer and player got Blackjack!)';
-                allLoss = false;
+            if (botScore > 21) {
+                await channel.send(`💥 **DEALER BUSTED** with a score of **${botScore}**!`);
             } else {
-                outcome = '🌟 **BLACKJACK! You Win!** 🎉';
+                await channel.send(`🤖 Dealer stands with a score of **${botScore}**.`);
+            }
+            await sleep(1000);
+        }
+
+        // =====================================================================
+        // STAGE 4: RESULTS & OUTCOMES
+        // =====================================================================
+        const resultsEmbed = new EmbedBuilder()
+            .setTitle('♠️♥️ Blackjack - Final Results ♣️♦️')
+            .setDescription(
+                `**Dealer Final Hand:** ${formatHand(botHand)} (Score: **${botScore}**${botScore > 21 ? ' - BUST' : ''})\n\n` +
+                `Here are the results:`
+            );
+
+        let anyWinner = false;
+        let allLoss = true;
+
+        for (const player of playerStates) {
+            let outcome = '';
+
+            if (player.status === 'bust') {
+                outcome = '💥 **Bust (Lost)**';
+            } else if (player.status === 'blackjack') {
+                if (botScore === 21 && botHand.length === 2) {
+                    outcome = '🤝 **Push** (Both dealer and player got Blackjack!)';
+                    allLoss = false;
+                } else {
+                    outcome = '🌟 **BLACKJACK! You Win!** 🎉';
+                    anyWinner = true;
+                    allLoss = false;
+                }
+            } else if (botScore > 21) {
+                outcome = '🎉 **Win!** (Dealer Busted)';
                 anyWinner = true;
                 allLoss = false;
+            } else if (player.score > botScore) {
+                outcome = `🎉 **Win!** (${player.score} vs ${botScore})`;
+                anyWinner = true;
+                allLoss = false;
+            } else if (player.score < botScore) {
+                outcome = `😔 **Lost** (${player.score} vs ${botScore})`;
+            } else {
+                outcome = `🤝 **Push** (Tied at ${player.score})`;
+                allLoss = false;
             }
-        } else if (botScore > 21) {
-            outcome = '🎉 **Win!** (Dealer Busted)';
-            anyWinner = true;
-            allLoss = false;
-        } else if (player.score > botScore) {
-            outcome = `🎉 **Win!** (${player.score} vs ${botScore})`;
-            anyWinner = true;
-            allLoss = false;
-        } else if (player.score < botScore) {
-            outcome = `😔 **Lost** (${player.score} vs ${botScore})`;
-        } else {
-            outcome = `🤝 **Push** (Tied at ${player.score})`;
-            allLoss = false;
+
+            resultsEmbed.addFields({
+                name: `${player.displayName}`,
+                value: `Hand: ${formatHand(player.hand)}\nFinal Score: **${player.score}**\nResult: ${outcome}`,
+                inline: isMultiplayer
+            });
         }
 
-        resultsEmbed.addFields({
-            name: `${player.displayName}`,
-            value: `Hand: ${formatHand(player.hand)}\nFinal Score: **${player.score}**\nResult: ${outcome}`,
-            inline: false
-        });
+        resultsEmbed.setColor(anyWinner ? 'Green' : allLoss ? 'Red' : 'Yellow');
+
+        await channel.send({ embeds: [resultsEmbed] });
+    } finally {
+        if (isChannelLockedByUs) {
+            activeChannels.delete(channel.id);
+        }
     }
-
-    resultsEmbed.setColor(anyWinner ? 'Green' : allLoss ? 'Red' : 'Yellow');
-
-    await channel.send({ embeds: [resultsEmbed] });
 }
 
 export default {
-    name: 'messageCreate',
-    async execute(message, client) {
-        if (message.author.bot) return;
-
-        const content = message.content.trim().toLowerCase();
-        if (content === '!blackjack' || content === '!lobby') {
-            await startLobby(message, client, runBlackjackGame);
-        }
+    name: 'blackjack',
+    async execute(channel, players) {
+        await runBlackjackGame(channel, players);
     },
 };
